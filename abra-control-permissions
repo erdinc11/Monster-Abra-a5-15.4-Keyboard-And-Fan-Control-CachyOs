@@ -1,0 +1,17 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ -e /proc/acpi/call ]]; then
+    chown root:root /proc/acpi/call
+    chmod 0660 /proc/acpi/call
+fi
+
+shopt -s nullglob
+for led in /sys/class/leds/rgb:kbd_backlight*; do
+    for attr in "$led/brightness" "$led/multi_intensity"; do
+        if [[ -e "$attr" ]]; then
+            chown root:video "$attr"
+            chmod 0660 "$attr"
+        fi
+    done
+done

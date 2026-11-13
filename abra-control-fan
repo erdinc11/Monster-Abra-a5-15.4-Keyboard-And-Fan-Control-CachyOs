@@ -1,0 +1,112 @@
+#!/usr/bin/python3
+"""Narrow, validated bridge to the Abra/Tongfang embedded controller."""
+
+import json
+import sys
+import time
+from pathlib import Path
+
+ACPI_CALL = Path("/proc/acpi/call")
+ACPI_READ = 0x10000000000
+FAN_MODE_ADDR = 1873
+CPU_TEMP_ADDR = 0x43E
+MODES = {"auto": 0x00, "turbo": 0x10, "boost": 0x40}
+
+
+def acpi_call(value):
+    ACPI_CALL.write_text(f"\\_SB.AMW0.WMBC 0 4 {value}\n")
+    raw = ACPI_CALL.read_text().strip().rstrip("\x00")
+    if raw.startswith("{"):
+        parts = [int(item.strip(), 16) for item in raw.strip("{}").split(",") if item.strip()]
+        return int.from_bytes(bytes(reversed(parts)), "big")
+    return int(raw, 16)
+
+
+def ec_read(address):
+    return acpi_call(ACPI_READ + address) & 0xFF
+
+
+def set_mode(mode):
+    if mode not in MODES:
+        raise ValueError("Geçersiz fan modu")
+    value = MODES[mode]
+    def write_and_read(target):
+        actual = None
+        for _ in range(3):
+            acpi_call((target << 16) + FAN_MODE_ADDR)
+            time.sleep(0.1)
+            actual = ec_read(FAN_MODE_ADDR)
+            if actual == target:
+                return actual
+        return actual
+
+    actual = write_and_read(value)
+    if actual != value and mode == "boost":
+        # This EC sometimes accepts Boost only after leaving the current profile.
+        intermediate = write_and_read(MODES["turbo"])
+        if intermediate == MODES["turbo"]:
+            actual = write_and_read(value)
+    if actual != value and mode == "auto":
+        # Some EC firmware will not leave custom/fixed mode in one step.
+        intermediate = write_and_read(MODES["turbo"])
+        if intermediate != MODES["turbo"]:
+            raise RuntimeError(f"Fan modu sıfırlanamadı: {intermediate:#x}")
+        actual = write_and_read(value)
+    if actual != value:
+        raise RuntimeError(f"Fan modu doğrulanamadı: {actual:#x}")
+    return actual
+
+
+def set_fixed_level(level):
+    if type(level) is not int or not 1 <= level <= 3:
+        raise ValueError("Bu bilgisayarda sabit fan seviyesi L1–L3 arasında olmalı")
+    value = 0x80 + level
+    acpi_call((value << 16) + FAN_MODE_ADDR)
+    actual = ec_read(FAN_MODE_ADDR)
+    if actual != value:
+        raise RuntimeError(f"Sabit fan seviyesi doğrulanamadı: {actual:#x}")
+    return actual
+
+
+def status():
+    cpu = ec_read(CPU_TEMP_ADDR)
+    if not 0 < cpu < 110:
+        cpu = None
+    mode = ec_read(FAN_MODE_ADDR)
+    cpu_fan_raw = ec_read(0x1804)
+    gpu_fan_raw = ec_read(0x1809)
+    return {
+        "ok": True,
+        "mode": mode,
+        "fixed_level": mode - 0x80 if 0x81 <= mode <= 0x83 else None,
+        "cpu_fan_raw": cpu_fan_raw,
+        "gpu_fan_raw": gpu_fan_raw,
+        "cpu_temp": cpu,
+    }
+
+
+def main():
+    try:
+        if len(sys.argv) != 1:
+            raise ValueError("Argüman kabul edilmiyor")
+        request = json.loads(sys.stdin.readline())
+        if not isinstance(request, dict):
+            raise ValueError("İstek biçimi geçersiz")
+        op = request.get("op")
+        if op == "status" and set(request) == {"op"}:
+            response = status()
+        elif op == "mode" and set(request) == {"op", "mode"}:
+            response = {"ok": True, "mode": set_mode(request["mode"])}
+        elif op == "level" and set(request) == {"op", "level"}:
+            response = {"ok": True, "mode": set_fixed_level(request["level"])}
+        else:
+            raise ValueError("İzin verilmeyen fan işlemi")
+        print(json.dumps(response))
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

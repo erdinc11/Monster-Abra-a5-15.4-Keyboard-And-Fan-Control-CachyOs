@@ -1,0 +1,1 @@
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="rgb:kbd_backlight*", RUN+="/usr/local/libexec/abra-control-permissions"

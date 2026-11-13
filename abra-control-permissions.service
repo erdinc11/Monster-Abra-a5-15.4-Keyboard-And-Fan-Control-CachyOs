@@ -1,0 +1,11 @@
+[Unit]
+Description=Set Abra Control hardware permissions
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/abra-control-permissions
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
